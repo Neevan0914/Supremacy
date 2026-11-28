@@ -10,6 +10,7 @@ import { createSky } from "./graphics/sky.js";
 import { createGroundMaterial } from "./graphics/ground.js";
 import { createGrass } from "./graphics/grass.js";
 import { pbrTextures } from "./graphics/textures.js";
+import { createFxTextures } from "./graphics/fx.js";
 import {
   detailedRifle,
   detailedHandgun,
@@ -683,7 +684,9 @@ function buildWorld(s, e, gfx, pipe) {
     }
   }
   let pe = i(new THREE.BufferGeometry());
-  pe.setAttribute("position", new THREE.Float32BufferAttribute(Te, 3)), s.add(new THREE.LineSegments(pe, i(new THREE.LineBasicMaterial({ color: "#2a2722" }))));
+  pe.setAttribute("position", new THREE.Float32BufferAttribute(Te, 3));
+  const wires = new THREE.LineSegments(pe, i(new THREE.LineBasicMaterial({ color: "#2a2722" })));
+  (wires.userData.noReflect = !0), s.add(wires);
   for (let { mat: O, shadow: Q, geos: Y } of q.values()) {
     let T = i(mergeGeometries(Y));
     Y.forEach((ie) => ie.dispose());
@@ -1468,7 +1471,9 @@ var Particles = class {
         t = i.s;
       }
       let n = t.material;
-      (n.map = e.smoke ? this.tex.smoke : this.tex.soft),
+      (n.map = (e.tex && this.tex[e.tex]) || (e.smoke ? this.tex.puff || this.tex.smoke : this.tex.soft)),
+        (n.rotation = this.tex.puff && (e.smoke || e.tex) ? Math.random() * Math.PI * 2 : 0),
+        (t.renderOrder = e.additive ? 2 : 0),
         (n.blending = e.additive ? THREE.AdditiveBlending : THREE.NormalBlending),
         n.color.set(e.color),
         e.additive && n.color.multiplyScalar(this.boost),
@@ -1487,6 +1492,7 @@ var Particles = class {
           grav: e.grav ?? 0,
           op: n.opacity,
           drag: e.drag ?? 0,
+          fade: !!(e.smoke && this.tex.puff),
         });
     }
     update(e) {
@@ -1498,7 +1504,8 @@ var Particles = class {
         }
         (n.vel.y -= n.grav * e), n.vel.multiplyScalar(1 - n.drag * e), n.s.position.addScaledVector(n.vel, e);
         let i = n.life / n.max;
-        (n.s.material.opacity = n.op * i), n.s.scale.setScalar(n.size + n.grow * (1 - i));
+        (n.s.material.opacity = n.op * (n.fade ? Math.min(1, i * 2.2) * Math.min(1, (1 - i) * 12 + 0.3) : i)),
+          n.s.scale.setScalar(n.size + n.grow * (n.fade ? Math.sqrt(1 - i) : 1 - i));
       }
     }
     dispose() {
@@ -1768,6 +1775,7 @@ async function createBattle(s, e) {
   n.barMat = (P) => g[P] || (g[P] = new THREE.MeshBasicMaterial({ color: P, depthTest: !1 }));
   let x = new Particles(h);
   gfx.post && (x.boost = 3.5);
+  gfx.texSize && Object.assign(x.tex, createFxTextures());
   // Pooled muzzle-flash lights (fixed count so shaders never recompile).
   const flashLights = gfx.dynamicLights
     ? [0, 1].map(() => {
@@ -1872,6 +1880,8 @@ async function createBattle(s, e) {
     }),
       (P.recoil = 1),
       x.spawn({ pos: ce, size: 0.22, life: 0.05, color: "#ffd080", additive: !0 }),
+      x.tex.flash &&
+        x.spawn({ pos: ce.clone().addScaledVector(F, 0.08), size: P.weapon === "handgun" ? 0.3 : 0.45, life: 0.045, color: "#ffc070", additive: !0, tex: "flash" }),
       x.spawn({
         pos: ce.clone().addScaledVector(F, 0.1),
         size: 0.3,
@@ -2039,8 +2049,8 @@ async function createBattle(s, e) {
         x.spawn({
           pos: P.pos.clone().setY(0.8),
           size: 2 + Math.random() * 1.5,
-          life: 2.2 + Math.random(),
-          color: ce % 2 ? "#3d3a33" : "#5a5547",
+          life: (2.2 + Math.random()) * (x.tex.puff ? 1.8 : 1),
+          color: x.tex.puff ? (ce % 2 ? "#665e52" : "#82796a") : ce % 2 ? "#3d3a33" : "#5a5547",
           smoke: !0,
           opacity: 1,
           vel: Ue.multiplyScalar(0.4),
@@ -2057,7 +2067,36 @@ async function createBattle(s, e) {
         grav: 14,
         vel: new THREE.Vector3((Math.random() - 0.5) * 10, 6 + Math.random() * 6, (Math.random() - 0.5) * 10),
       });
-    qe.position.set(P.pos.x, 1.5, P.pos.z), (qe.intensity = 60);
+    if (x.tex.fire) {
+      x.spawn({ pos: P.pos.clone().setY(1.2), size: 7.5, life: 0.13, color: "#fff2d0", additive: !0, tex: "flash" });
+      for (let ce = 0; ce < 6; ce++)
+        x.spawn({
+          pos: P.pos.clone().setY(0.9 + Math.random()),
+          size: 1.8 + Math.random() * 1.6,
+          life: 0.35 + Math.random() * 0.25,
+          color: ce % 2 ? "#ff8a2a" : "#ffc35a",
+          additive: !0,
+          tex: "fire",
+          vel: new THREE.Vector3((Math.random() - 0.5) * 3, 2 + Math.random() * 3, (Math.random() - 0.5) * 3),
+          drag: 2.5,
+          grow: 2.5,
+        });
+      for (let ce = 0; ce < 12; ce++) {
+        const le = (ce / 12) * Math.PI * 2 + Math.random() * 0.4;
+        x.spawn({
+          pos: P.pos.clone().setY(0.35),
+          size: 1 + Math.random() * 0.6,
+          life: 1.8 + Math.random() * 0.8,
+          color: "#9a8a6a",
+          smoke: !0,
+          opacity: 0.75,
+          vel: new THREE.Vector3(Math.cos(le) * 8, 0.4 + Math.random() * 0.6, Math.sin(le) * 8),
+          drag: 2.8,
+          grow: 3.5,
+        });
+      }
+    }
+    qe.position.set(P.pos.x, 1.5, P.pos.z), (qe.intensity = x.tex.fire ? 140 : 60);
     let Z = new THREE.Mesh(new THREE.PlaneGeometry(MORTAR_RADIUS * 1.5, MORTAR_RADIUS * 1.5), Ke);
     (Z.rotation.x = -Math.PI / 2),
       (Z.rotation.z = Math.random() * 6),
@@ -2532,7 +2571,7 @@ async function createBattle(s, e) {
     switchWeapon: () => me(),
     spectateNext: () => b.spectate++,
     quality: gfx.level,
-    debug: { S: b, soldiers: p, camera: l, scene: h, renderer: a, player: y, gfx, pipe },
+    debug: { S: b, soldiers: p, camera: l, scene: h, renderer: a, player: y, gfx, pipe, fx: x, explode: (X, Z) => oe({ side: "none", pos: new THREE.Vector3(X, 0, Z) }) },
     dispose() {
       (n.disposed = !0),
         cancelAnimationFrame(J),

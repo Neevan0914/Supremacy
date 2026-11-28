@@ -76,7 +76,8 @@ export function createGroundMaterial(gfx, { seed, reflection, envIntensity = 1 }
         uniform sampler2D uWet, uMacro, uReflect;
         uniform mat4 uReflectMatrix;
         uniform float uTime;
-        float gWet = 0.0;`,
+        float gWet = 0.0;
+        vec2 gRipple = vec2(0.0);`,
       )
       .replace(
         "#include <map_fragment>",
@@ -109,7 +110,8 @@ export function createGroundMaterial(gfx, { seed, reflection, envIntensity = 1 }
         #if USE_PUDDLES
           // Standing water is flat apart from faint wind ripples.
           vec2 rp = vWPos.xz * 3.1;
-          vec3 ripple = vec3(sin(rp.x + uTime * 1.3) * 0.5 + sin(rp.y * 1.3 - uTime * 1.1) * 0.5, 0.0, 0.0) * 0.015;
+          vec3 ripple = vec3(sin(rp.x + uTime * 1.3) * 0.5 + sin(rp.y * 1.3 - uTime * 1.1) * 0.5, 0.0, cos(rp.y * 0.9 + uTime * 0.8) * 0.5) * 0.015;
+          gRipple = ripple.xz;
           vec3 flatN = normalize(nonPerturbedNormal + (viewMatrix * vec4(ripple, 0.0)).xyz);
           normal = normalize(mix(normal, flatN, gWet));
         #endif`,
@@ -119,7 +121,7 @@ export function createGroundMaterial(gfx, { seed, reflection, envIntensity = 1 }
         `#include <lights_fragment_maps>
         #if USE_PLANAR
           vec4 rpos = uReflectMatrix * vec4(vWPos, 1.0);
-          vec2 ruv = rpos.xy / rpos.w + (normal.xy - nonPerturbedNormal.xy) * 0.35;
+          vec2 ruv = rpos.xy / rpos.w + gRipple * 0.4;
           vec3 refl = texture2D(uReflect, ruv).rgb;
           radiance = mix(radiance, refl, gWet);
         #endif`,
