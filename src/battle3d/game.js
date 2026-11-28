@@ -4,6 +4,20 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { resolveQuality, QUALITY_LEVELS, storedQuality, saveQuality, defaultQuality } from "./graphics/quality.js";
+import { createPipeline } from "./graphics/pipeline.js";
+import { createSky } from "./graphics/sky.js";
+import { createGroundMaterial } from "./graphics/ground.js";
+import { createGrass } from "./graphics/grass.js";
+import { pbrTextures } from "./graphics/textures.js";
+import {
+  detailedRifle,
+  detailedHandgun,
+  detailedRock,
+  detailedPine,
+  detailedSandbag,
+  boxProjectUVs,
+} from "./graphics/models.js";
 
 var JOINTS = {
   hips: [0, 0.95, 0],
@@ -330,7 +344,11 @@ function noiseTex(s, e, t, n = 128, i) {
     r.putImageData(c, 0, 0), i && i(r, o, a);
   });
 }
-function buildWorld(s, e) {
+function buildWorld(s, e, gfx, pipe) {
+  // `hi` = PBR asset path (MEDIUM and above). The seeded layout RNG `t` is
+  // consumed identically on every quality level so the map never changes.
+  const hi = gfx.texSize > 0,
+    renderer = pipe.renderer;
   let t = rng(e),
     n = [],
     i = (O) => (n.push(O), O),
@@ -353,11 +371,22 @@ function buildWorld(s, e) {
           "uniform vec3 top; uniform vec3 mid; uniform vec3 bot; varying vec3 vP; void main(){ float h = normalize(vP).y; vec3 c = h > 0.0 ? mix(mid, top, pow(h, 0.6)) : mix(mid, bot, min(1.0, -h * 4.0)); gl_FragColor = vec4(c, 1.0); }",
       }),
     );
-  s.add(new THREE.Mesh(a, c)), (s.fog = new THREE.Fog("#c9c4aa", 40, 150));
-  let l = new THREE.HemisphereLight("#e4e8d8", "#5a5040", 1.5);
+  const sunOffset = gfx.physicalSky ? new THREE.Vector3(21, 20, 9) : new THREE.Vector3(14, 26, 10);
+  let sky = null;
+  if (gfx.physicalSky) {
+    sky = createSky({ sunDir: sunOffset });
+    s.add(sky.mesh), n.push(sky), (s.fog = new THREE.FogExp2(sky.fogColor, 0.0058));
+    if (gfx.envLighting) {
+      const env = sky.bakeEnvironment(renderer);
+      n.push(env), (s.environment = env.texture), (s.environmentIntensity = 0.6);
+    }
+  } else s.add(new THREE.Mesh(a, c)), (s.fog = new THREE.Fog("#c9c4aa", 40, 150));
+  let l = gfx.physicalSky
+    ? new THREE.HemisphereLight("#cfe0f0", "#5a5040", 0.25)
+    : new THREE.HemisphereLight("#e4e8d8", "#5a5040", 1.5);
   s.add(l);
-  let h = new THREE.DirectionalLight("#fff1d6", 2.4);
-  h.position.set(14, 26, 10), (h.castShadow = !0), h.shadow.mapSize.set(2048, 2048);
+  let h = gfx.physicalSky ? new THREE.DirectionalLight("#ffe5c2", 4.3) : new THREE.DirectionalLight("#fff1d6", 2.4);
+  h.position.copy(sunOffset), (h.castShadow = !0), h.shadow.mapSize.set(gfx.shadowMapSize, gfx.shadowMapSize);
   let u = h.shadow.camera;
   (u.left = -26),
     (u.right = 26),
@@ -365,13 +394,19 @@ function buildWorld(s, e) {
     (u.bottom = -28),
     (u.near = 1),
     (u.far = 80),
-    (h.shadow.bias = -6e-4),
+    (h.shadow.bias = gfx.shadowMapSize >= 4096 ? -2.5e-4 : -6e-4),
     (h.shadow.normalBias = 0.03),
     s.add(h),
     s.add(h.target);
   let d = i(groundTex(t)),
     f = new THREE.Mesh(i(new THREE.PlaneGeometry(300, 300, 1, 1)), i(new THREE.MeshStandardMaterial({ map: d, roughness: 1, metalness: 0 })));
   d.repeat.set(60, 60), (f.rotation.x = -Math.PI / 2), (f.receiveShadow = !0), s.add(f);
+  let ground = null;
+  if (hi) {
+    ground = createGroundMaterial(gfx, { seed: e, reflection: pipe.reflection });
+    ground.textures.forEach((tx) => n.push(tx)), (f.material = i(ground.material));
+    pipe.reflection && pipe.reflection.hide.push(f);
+  }
   let g = i(
       noiseTex("#8a7a55", 40, t, 128, (O, Q, Y) => {
         O.strokeStyle = "rgba(60,50,30,0.35)";
@@ -431,7 +466,9 @@ function buildWorld(s, e) {
       let me = Q.uuid + (T ? "s" : "");
       q.has(me) || q.set(me, { mat: Q, shadow: T, geos: [] });
       let ie = O.index ? O.toNonIndexed() : O;
-      ie !== O && O.dispose(), ie.applyMatrix4(Y), q.get(me).geos.push(ie);
+      ie !== O && O.dispose(), ie.applyMatrix4(Y);
+      Q.userData.worldUV && boxProjectUVs(ie, Q.userData.worldUV);
+      q.get(me).geos.push(ie);
     },
     B = (O, Q, Y, T, me, ie = 0, ye = !0) => {
       _.compose(new THREE.Vector3(Y, T, me), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ie), new THREE.Vector3(1, 1, 1)),
@@ -439,7 +476,7 @@ function buildWorld(s, e) {
     },
     k = (O, Q, Y, T, me, ie = {}) =>
       r.push({ minX: O - Y, maxX: O + Y, minZ: Q - T, maxZ: Q + T, h: me, ...ie }),
-    W = i(new THREE.SphereGeometry(0.5, 10, 6));
+    W = i(hi ? detailedSandbag(gfx.texSize >= 1024 ? 24 : 16, gfx.texSize >= 1024 ? 14 : 10) : new THREE.SphereGeometry(0.5, 10, 6));
   W.scale(0.56, 0.3, 0.32);
   let ne = [];
   function V(O, Q, Y, T) {
@@ -507,8 +544,9 @@ function buildWorld(s, e) {
       let Be = ie.get(de);
       me.setXYZ(ye, me.getX(ye) * Be, me.getY(ye) * Be * 0.75, me.getZ(ye) * Be);
     }
-    T.computeVertexNormals(),
-      B(T, S, O, Y * 0.35, Q, t() * 6),
+    T.computeVertexNormals();
+    hi && (T.dispose(), (T = detailedRock(Y, (O * 1000 + Q * 37) | 0, gfx.texSize >= 1024 ? 4 : 3)));
+    B(T, S, O, Y * 0.35, Q, t() * 6),
       o.push({ x: O, z: Q, r: Y * 0.85, h: Y * 1.05 });
   }
   function Me(O, Q) {
@@ -529,6 +567,15 @@ function buildWorld(s, e) {
     o.push({ x: O, z: Q, r: 0.55, h: 1, bullets: !1 });
   }
   function fe(O, Q, Y, T = !0) {
+    if (hi) {
+      const rot = t() * 3;
+      t(), t();
+      const pine = detailedPine(Y, (O * 917 + Q * 131) | 0, T ? 7 : 5);
+      B(pine.trunk, C, O, 0, Q, rot, T);
+      pine.foliage.forEach((g) => B(g, A, O, 0, Q, rot, T));
+      T && o.push({ x: O, z: Q, r: 0.25 * Y, h: 8 });
+      return;
+    }
     B(new THREE.CylinderGeometry(0.12 * Y, 0.2 * Y, 2.2 * Y, 7), C, O, 1.1 * Y, Q, 0, T);
     for (let me = 0; me < 3; me++) {
       let ie = (1.5 - me * 0.35) * Y;
@@ -539,6 +586,25 @@ function buildWorld(s, e) {
   function Ke(O, Q, Y) {
     let T = new THREE.PlaneGeometry(Y * 2, Y * 2);
     T.rotateZ(t() * 6), T.rotateX(-Math.PI / 2), w(T, L, _.makeTranslation(O, 0.01, Q), !1);
+  }
+  if (hi) {
+    const ps = Math.min(512, Math.max(256, gfx.texSize / 2)),
+      tex = (kind, rep = 1, size = ps) => {
+        const tx = pbrTextures(kind, size, rep);
+        return Object.values(tx).forEach((v) => v && n.push(v)), tx;
+      },
+      M = (o) => i(gfx.physicalMaterials && o.clearcoat ? new THREE.MeshPhysicalMaterial(o) : new THREE.MeshStandardMaterial(o));
+    x = M({ ...tex("burlap", 2), roughness: 1, color: "#d9d2bf" });
+    p = M({ ...tex("crate"), roughness: 1 });
+    v = M({ ...tex("bricks"), roughness: 1 });
+    v.userData.worldUV = 0.5;
+    S = M({ ...tex("rock"), roughness: 1 });
+    S.userData.worldUV = 0.45;
+    b = M({ ...tex("steel"), roughness: 1, metalness: 1 });
+    b.userData.worldUV = 2.5;
+    C = M({ ...tex("bark"), roughness: 1 });
+    A = M({ ...tex("needles"), roughness: 1, side: THREE.DoubleSide, color: "#c8d8b8" });
+    A.userData.worldUV = 0.9;
   }
   let qe = [11, -11];
   for (let O of qe) {
@@ -568,11 +634,18 @@ function buildWorld(s, e) {
     fe(Math.cos(Q) * Y, Math.sin(Q) * Y * 1.2, 1 + t() * 0.8, !1);
   }
   let oe = i(new THREE.MeshStandardMaterial({ color: "#56583e", roughness: 1, flatShading: !0 }));
+  if (hi) {
+    const tx = pbrTextures("ground", 512, 1);
+    Object.values(tx).forEach((v) => v && n.push(v));
+    oe = i(new THREE.MeshStandardMaterial({ ...tx, roughness: 1, color: "#58663c" }));
+    oe.userData.worldUV = 0.12;
+  }
   for (let O = 0; O < 14; O++) {
     let Q = (O / 14) * Math.PI * 2 + t() * 0.3,
       Y = 110 + t() * 40,
       T = 25 + t() * 30,
       me = new THREE.IcosahedronGeometry(T, 1);
+    hi && (me.dispose(), (me = detailedRock(T, O * 71 + 5, 3)));
     me.scale(1, 0.25 + t() * 0.2, 1),
       w(me, oe, _.makeTranslation(Math.cos(Q) * Y, -T * 0.05, Math.sin(Q) * Y), !1);
   }
@@ -617,10 +690,20 @@ function buildWorld(s, e) {
     let me = new THREE.Mesh(T, O);
     (me.castShadow = Q), (me.receiveShadow = !0), s.add(me);
   }
+  let grass = null;
+  if (gfx.grass) {
+    grass = createGrass({ count: gfx.grass, world: { boxes: r, circles: o }, seed: e ^ 0x51ed, wetAt: ground && ground.wetAt });
+    s.add(grass.mesh), n.push(grass);
+    pipe.reflection && pipe.reflection.hide.push(grass.mesh);
+  }
   return {
     boxes: r,
     circles: o,
     sun: h,
+    sunOffset,
+    update(time) {
+      sky && sky.update(time), ground && ground.update(time), grass && grass.update(time);
+    },
     dispose() {
       n.forEach((O) => O.dispose && O.dispose());
     },
@@ -1251,8 +1334,55 @@ var BATTLE_TIME = 90,
   clamp = (s, e, t) => Math.max(e, Math.min(t, s)),
   wrapAngle = (s) => Math.atan2(Math.sin(s), Math.cos(s)),
   dirFromYaw = (s, e = new THREE.Vector3()) => e.set(Math.sin(s), 0, Math.cos(s));
-function makeGunMats() {
-  return { vc: new THREE.MeshStandardMaterial({ vertexColors: !0, roughness: 0.55, metalness: 0.3 }) };
+function makeGunMats(gfx) {
+  const mats = { vc: new THREE.MeshStandardMaterial({ vertexColors: !0, roughness: 0.55, metalness: 0.3 }) };
+  if (gfx && gfx.detailModels) {
+    const wt = pbrTextures("gunwood", 256, 1),
+      mt = pbrTextures("steel", 256, 2);
+    const woodOpts = { map: wt.map, normalMap: wt.normalMap, roughnessMap: wt.roughnessMap, roughness: 0.9, metalness: 0 };
+    mats.wood = gfx.physicalMaterials
+      ? new THREE.MeshPhysicalMaterial({ ...woodOpts, clearcoat: 0.45, clearcoatRoughness: 0.35 })
+      : new THREE.MeshStandardMaterial(woodOpts);
+    mats.metal = new THREE.MeshStandardMaterial({
+      color: "#4a4d52",
+      roughnessMap: mt.roughnessMap,
+      normalMap: mt.normalMap,
+      normalScale: new THREE.Vector2(0.3, 0.3),
+      roughness: 0.85,
+      metalness: 0.92,
+    });
+    mats.textures = [...Object.values(wt), ...Object.values(mt)].filter(Boolean);
+  }
+  return mats;
+}
+
+// Re-creates a soldier material as MeshPhysicalMaterial with cloth sheen /
+// clear coats (ULTRA). Other levels just clone it.
+function upgradeSoldierMaterial(gfx, part, src) {
+  if (!gfx.physicalMaterials || !src.isMeshStandardMaterial) return src.clone();
+  const m = new THREE.MeshPhysicalMaterial();
+  THREE.MeshStandardMaterial.prototype.copy.call(m, src);
+  m.defines = { STANDARD: "", PHYSICAL: "" };
+  if (["tunic", "trousers", "canvas"].includes(part)) {
+    m.sheen = 1;
+    m.sheenRoughness = 0.7;
+    m.sheenColor = new THREE.Color(0.32, 0.32, 0.28);
+    m.roughness = Math.min(1, m.roughness + 0.04);
+  } else if (part === "helmet") {
+    m.clearcoat = 0.35;
+    m.clearcoatRoughness = 0.5;
+    m.metalness = 0.35;
+  } else if (part === "skin") {
+    m.sheen = 0.35;
+    m.sheenRoughness = 0.45;
+    m.sheenColor = new THREE.Color(0.55, 0.32, 0.26);
+    m.roughness = 0.52;
+    m.specularIntensity = 0.6;
+  } else if (part === "boot" || part === "leather") {
+    m.clearcoat = 0.3;
+    m.clearcoatRoughness = 0.4;
+  }
+  return m;
 }
 var Yo = new THREE.Color("#5b3a1f"),
   pr = new THREE.Color("#2a2b2d");
@@ -1323,7 +1453,8 @@ var Particles = class {
           smoke: radialTex("rgba(200,200,200,0.7)", "rgba(200,200,200,0)"),
         }),
         (this.pool = []),
-        (this.live = []);
+        (this.live = []),
+        (this.boost = 1);
       for (let n = 0; n < t; n++) {
         let i = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex.soft, transparent: !0, depthWrite: !1 }));
         (i.visible = !1), e.add(i), this.pool.push(i);
@@ -1340,6 +1471,7 @@ var Particles = class {
       (n.map = e.smoke ? this.tex.smoke : this.tex.soft),
         (n.blending = e.additive ? THREE.AdditiveBlending : THREE.NormalBlending),
         n.color.set(e.color),
+        e.additive && n.color.multiplyScalar(this.boost),
         (n.opacity = e.opacity ?? 1),
         (n.needsUpdate = !0),
         t.position.copy(e.pos),
@@ -1408,7 +1540,9 @@ var Particles = class {
         (this.gunPivot = new THREE.Object3D()),
         this.gunPivot.position.set(-0.1, 1.42, 0.02),
         this.group.add(this.gunPivot),
-        (this.guns = { rifle: makeRifle(e.gunMats), handgun: makeHandgun(e.gunMats) });
+        (this.guns = e.gunMats.wood
+          ? { rifle: detailedRifle(e.gunMats), handgun: detailedHandgun(e.gunMats) }
+          : { rifle: makeRifle(e.gunMats), handgun: makeHandgun(e.gunMats) });
       for (let n in this.guns) {
         let i = this.guns[n];
         i.position.copy(i.userData.offset), (i.visible = n === this.weapon), this.gunPivot.add(i);
@@ -1430,6 +1564,7 @@ var Particles = class {
         this.bar.add(t, n),
         (this.barFill = n),
         (this.bar.renderOrder = 10),
+        (this.bar.userData.noReflect = !0),
         this.game.scene.add(this.bar);
     }
     get gun() {
@@ -1583,7 +1718,8 @@ async function createBattle(s, e) {
       onOver() {},
       ...e,
     },
-    n = { scene: new THREE.Scene(), enemyColor: t.enemyColor, droppedGuns: [], gunMats: makeGunMats(), disposed: !1 },
+    gfx = resolveQuality(t.quality),
+    n = { scene: new THREE.Scene(), enemyColor: t.enemyColor, droppedGuns: [], gunMats: makeGunMats(gfx), disposed: !1 },
     i = createHud(s, { enemyColor: t.enemyColor }),
     r = createAudio(),
     o;
@@ -1593,27 +1729,32 @@ async function createBattle(s, e) {
     throw (i.setLoading("COULD NOT LOAD SOLDIER MODEL"), P);
   }
   if (e.isCancelled && e.isCancelled()) return i.dispose(), null;
-  (n.template = o), i.setLoading(null);
-  let a = new THREE.WebGLRenderer({ antialias: !0, powerPreference: "high-performance" });
-  a.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75)),
-    (a.shadowMap.enabled = !0),
-    (a.shadowMap.type = THREE.PCFSoftShadowMap),
-    (a.toneMapping = THREE.ACESFilmicToneMapping),
-    (a.toneMappingExposure = 1.25);
+  if (((n.template = o), gfx.texSize)) {
+    // Procedural PBR textures take a moment the first time; let the HUD paint.
+    i.setLoading("BUILDING " + gfx.level.toUpperCase() + " GRAPHICS");
+    await new Promise((P) => setTimeout(P, 50));
+    if (e.isCancelled && e.isCancelled()) return i.dispose(), null;
+  }
+  const pipe = createPipeline(gfx);
+  let a = pipe.renderer;
   let c = a.domElement;
   (c.style.cssText = "display:block;width:100%;height:100%;touch-action:none;cursor:crosshair;outline:none"),
     (c.tabIndex = 0),
     i.root.insertBefore(c, i.root.firstChild);
   let l = new THREE.PerspectiveCamera(70, 1, 0.05, 500),
     h = n.scene,
-    u = buildWorld(h, t.seed),
+    u = buildWorld(h, t.seed, gfx, pipe),
+    _loaded = i.setLoading(null),
     d = new Map(),
     f = { player: new THREE.Color("#efe2c2"), enemy: new THREE.Color(t.enemyColor).lerp(new THREE.Color("#ffffff"), 0.25) };
+  pipe.attach(h, l);
   (n.teamMaterial = (P, F, Z) => {
-    if (!["tunic", "trousers", "helmet"].includes(F)) return Z;
-    let $ = P + F;
+    const team = ["tunic", "trousers", "helmet"].includes(F);
+    if (!team && !gfx.physicalMaterials) return Z;
+    let $ = (team ? P : "") + F;
     if (!d.has($)) {
-      let ce = Z.clone();
+      let ce = upgradeSoldierMaterial(gfx, F, Z);
+      if (!team) return d.set($, ce), ce;
       F === "helmet"
         ? P === "enemy" && ce.color.copy(new THREE.Color(t.enemyColor).multiplyScalar(0.35))
         : ce.color.copy(f[P]),
@@ -1625,8 +1766,17 @@ async function createBattle(s, e) {
     (n.barBgMat = new THREE.MeshBasicMaterial({ color: "#000000", transparent: !0, opacity: 0.5, depthTest: !1 }));
   let g = {};
   n.barMat = (P) => g[P] || (g[P] = new THREE.MeshBasicMaterial({ color: P, depthTest: !1 }));
-  let x = new Particles(h),
-    m = t.difficulty,
+  let x = new Particles(h);
+  gfx.post && (x.boost = 3.5);
+  // Pooled muzzle-flash lights (fixed count so shaders never recompile).
+  const flashLights = gfx.dynamicLights
+    ? [0, 1].map(() => {
+        const pl = new THREE.PointLight("#ffc27a", 0, 10, 2);
+        return h.add(pl), pl;
+      })
+    : [];
+  let flashIdx = 0;
+  let m = t.difficulty,
     p = [],
     y = new Soldier(n, { team: "player", isPlayer: !0, hp: t.playerHp, x: 0, z: 17, facing: Math.PI, id: "p0" });
   p.push(y),
@@ -1701,7 +1851,12 @@ async function createBattle(s, e) {
       enemy: new THREE.MeshBasicMaterial({ color: "#ff7040", transparent: !0, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: !1 }),
     },
     _ = [];
+  gfx.post && (q.player.color.multiplyScalar(4), q.enemy.color.multiplyScalar(4));
   function w(P, F, Z) {
+    if (flashLights.length) {
+      const pl = P.isPlayer ? flashLights[0] : flashLights[1 + (flashIdx++ % (flashLights.length - 1))];
+      (P.isPlayer || pl.intensity < 1) && (P.muzzle(pl.position), (pl.intensity = P.isPlayer ? 5 : 3.5));
+    }
     let $ = _.pop() || new THREE.Mesh(L, q.player);
     ($.material = q[P.team]), ($.visible = !0), h.add($);
     let ce = P.muzzle(new THREE.Vector3());
@@ -1829,6 +1984,7 @@ async function createBattle(s, e) {
       depthWrite: !1,
       polygonOffset: !0,
       polygonOffsetFactor: -4,
+      depthTest: !gfx.grass, // keep the danger zone readable through grass
     }),
     xe = new THREE.CylinderGeometry(0.06, 0.03, 0.45, 8),
     Me = new THREE.MeshStandardMaterial({ color: "#2d2f2a", metalness: 0.5, roughness: 0.6 }),
@@ -2175,8 +2331,7 @@ async function createBattle(s, e) {
       (Ne += ((Z ? Be - 20 : Be) - Ne) * Math.min(1, P * 12)),
       Math.abs(l.fov - Ne) > 0.01 && ((l.fov = Ne), l.updateProjectionMatrix()),
       (b.listener = F.pos),
-      u.sun.position.set(F.pos.x + 14, 26, F.pos.z + 10),
-      u.sun.target.position.set(F.pos.x, 0, F.pos.z);
+      placeSun(F.pos);
   }
   let M = !1,
     z = (P, F, Z = 0.0024) => {
@@ -2287,7 +2442,7 @@ async function createBattle(s, e) {
   let D = () => {
       let P = Math.max(1, i.root.clientWidth),
         F = Math.max(1, i.root.clientHeight);
-      a.setSize(P, F, !1), (l.aspect = P / F);
+      pipe.setSize(P, F), (l.aspect = P / F);
       let Z = P / F;
       (Be = Z >= 1 ? 70 : Math.min(92, (2 * Math.atan(Math.tan((75 * Math.PI) / 360) / Z) * 180) / Math.PI)),
         l.updateProjectionMatrix();
@@ -2348,7 +2503,23 @@ async function createBattle(s, e) {
       R(1e-4);
       for (let Z of p) Z.update(0, b.elapsed, l);
     }
-    a.render(h, l);
+    u.update(b.elapsed);
+    for (const pl of flashLights) pl.intensity = Math.max(0, pl.intensity - F * 90);
+    pipe.render(h, l, F);
+  }
+  // Follow the focus soldier with the sun's shadow frustum, snapped to whole
+  // shadow-map texels so shadow edges don't shimmer while moving.
+  const sunZ = u.sunOffset.clone().normalize(),
+    sunX = new THREE.Vector3(0, 1, 0).cross(sunZ).normalize(),
+    sunY = sunZ.clone().cross(sunX),
+    texel = (u.sun.shadow.camera.right - u.sun.shadow.camera.left) / gfx.shadowMapSize,
+    snapV = new THREE.Vector3();
+  function placeSun(pos) {
+    snapV.set(pos.x, 0, pos.z);
+    const ax = snapV.dot(sunX),
+      ay = snapV.dot(sunY);
+    snapV.addScaledVector(sunX, Math.round(ax / texel) * texel - ax).addScaledVector(sunY, Math.round(ay / texel) * texel - ay);
+    u.sun.target.position.copy(snapV), u.sun.position.copy(snapV).add(u.sunOffset);
   }
   J = requestAnimationFrame(Se);
   let be = {
@@ -2360,7 +2531,8 @@ async function createBattle(s, e) {
     reload: T,
     switchWeapon: () => me(),
     spectateNext: () => b.spectate++,
-    debug: { S: b, soldiers: p, camera: l, scene: h, renderer: a, player: y },
+    quality: gfx.level,
+    debug: { S: b, soldiers: p, camera: l, scene: h, renderer: a, player: y, gfx, pipe },
     dispose() {
       (n.disposed = !0),
         cancelAnimationFrame(J),
@@ -2387,11 +2559,13 @@ async function createBattle(s, e) {
           ...Object.values(q),
           ...Object.values(g),
           ...d.values(),
-          ...Object.values(n.gunMats),
+          ...Object.values(n.gunMats).filter((P) => P.isMaterial),
         ].forEach((P) => P.dispose()),
         fe.dispose(),
         (n.scorches || []).forEach((P) => P.geometry.dispose()),
         r.dispose(),
+        (n.gunMats.textures || []).forEach((P) => P.dispose()),
+        pipe.dispose(),
         a.dispose(),
         a.forceContextLoss(),
         i.dispose(),
@@ -2401,4 +2575,11 @@ async function createBattle(s, e) {
   return (window.__battle3d = be), be;
 }
 
-export { createBattle, loadSoldier };
+export {
+  createBattle,
+  loadSoldier,
+  QUALITY_LEVELS,
+  storedQuality as getQuality,
+  saveQuality as setQuality,
+  defaultQuality,
+};

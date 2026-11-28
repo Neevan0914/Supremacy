@@ -2,6 +2,7 @@
 //   npm install && npm run build
 import { build } from "esbuild";
 import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const HTML = new URL("../Supremacy.html", import.meta.url);
 const MARK = "<script>/* three.js (MIT) + 3D battle */\n";
@@ -25,4 +26,6 @@ if (start < 0) throw new Error("battle script marker not found");
 const end = html.indexOf("</script>", start);
 const next = html.slice(0, start) + MARK + js + "\n" + html.slice(end);
 writeFileSync(HTML, next);
+// Re-inject the settings modal source (idempotent) so edits to src/app/settings.js land.
+execFileSync("python3", [new URL("./patch_app.py", import.meta.url).pathname], { stdio: "inherit" });
 console.log(`battle bundle: ${(js.length / 1024).toFixed(0)} KB, html: ${(next.length / 1024 / 1024).toFixed(2)} MB`);
